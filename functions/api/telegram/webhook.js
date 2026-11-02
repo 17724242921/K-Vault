@@ -1,22 +1,3 @@
-import {
-  buildTelegramDirectLink,
-  createSignedTelegramFileId,
-  getTelegramFileFromMessage,
-  sendTelegramUploadNotice,
-  shouldUseSignedTelegramLinks,
-  shouldWriteTelegramMetadata,
-} from '../../utils/telegram.js';
-
-export async function onRequestGet(context) {
-  const { request } = context;
-  const url = new URL(request.url);
-  return jsonResponse({
-    ok: true,
-    message: 'Telegram webhook endpoint is ready.',
-    endpoint: url.pathname,
-  });
-}
-
 export async function onRequestPost(context) {
   const { request, env } = context;
 
@@ -84,6 +65,8 @@ export async function onRequestPost(context) {
 
   const directLink = buildTelegramDirectLink(env, directId, new URL(request.url).origin);
   const chatId = message?.chat?.id;
+  const isChannel = message.chat?.type === "channel";
+
   let reply = {
     attempted: false,
     ok: false,
@@ -92,18 +75,20 @@ export async function onRequestPost(context) {
   };
 
   if (chatId) {
-    const noticeResult = await sendTelegramUploadNotice(
-      {
-        chatId,
-        replyToMessageId: message.message_id,
-        directLink,
-        fileId: media.fileId,
-        messageId: media.messageId || message.message_id,
-        fileName: media.fileName,
-        fileSize: media.fileSize,
-      },
-      env
-    );
+    const sendPayload = {
+      chatId,
+      directLink,
+      fileId: media.fileId,
+      messageId: media.messageId || message.message_id,
+      fileName: media.fileName,
+      fileSize: media.fileSize,
+    };
+    // 私聊才加回复，频道不能回复帖子
+    if (!isChannel) {
+      sendPayload.replyToMessageId = message.message_id;
+    }
+
+    const noticeResult = await sendTelegramUploadNotice(sendPayload, env);
     reply = normalizeReplyResult(noticeResult);
     if (!noticeResult?.ok && !noticeResult?.skipped) {
       console.warn(
@@ -122,33 +107,8 @@ export async function onRequestPost(context) {
       chatId,
       messageId: message.message_id,
       mediaKind: media.kind,
+      chatType: message.chat?.type
     },
     reply,
   });
-}
-
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-function normalizeReplyResult(result) {
-  if (!result) {
-    return {
-      attempted: true,
-      ok: false,
-      skipped: false,
-      reason: 'empty-result',
-    };
-  }
-
-  return {
-    attempted: !result.skipped,
-    ok: Boolean(result.ok),
-    skipped: Boolean(result.skipped),
-    reason: result.reason || result.error || result.data?.description || '',
-    status: result.data?.error_code || undefined,
-  };
 }
